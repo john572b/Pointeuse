@@ -45,7 +45,7 @@ export function requireUser(req: FastifyRequest): UserRow {
 }
 
 export async function buildApp(db: DB, opts: { logger?: boolean; serveStatic?: boolean } = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: opts.logger ?? false, trustProxy: config.trustProxy, bodyLimit: 256 * 1024 });
+  const app = Fastify({ logger: opts.logger ?? false, disableRequestLogging: true, trustProxy: config.trustProxy, bodyLimit: 256 * 1024 });
   app.decorate("db", db);
   app.decorateRequest("user", null);
   app.decorateRequest("sessionId", null);
@@ -56,8 +56,8 @@ export async function buildApp(db: DB, opts: { logger?: boolean; serveStatic?: b
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'", "data:"],
         imgSrc: ["'self'", "data:"],
         connectSrc: ["'self'"],
         workerSrc: ["'self'"],
@@ -66,6 +66,7 @@ export async function buildApp(db: DB, opts: { logger?: boolean; serveStatic?: b
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
+        upgradeInsecureRequests: config.isProd ? [] : null,
       },
     },
     strictTransportSecurity: config.isProd ? { maxAge: 31536000, includeSubDomains: true } : false,
@@ -129,7 +130,7 @@ export async function buildApp(db: DB, opts: { logger?: boolean; serveStatic?: b
     const index = fs.readFileSync(path.join(config.staticDir, "index.html"));
     // Fallback SPA : toute route inconnue renvoie l'application.
     app.setNotFoundHandler((req, reply) => {
-      if (req.method !== "GET" || req.url.startsWith("/api/")) return reply.code(404).send({ error: "Introuvable." });
+      if ((req.method !== "GET" && req.method !== "HEAD") || req.url.startsWith("/api/")) return reply.code(404).send({ error: "Introuvable." });
       return reply.type("text/html").header("Cache-Control", "no-cache").send(index);
     });
   }

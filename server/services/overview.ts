@@ -67,7 +67,7 @@ export function dashboard(db: DB, user: UserRow, now = Date.now()) {
 
   const open = shifts.find((s) => s.endAt === null) ?? (db.prepare("SELECT id FROM shifts WHERE user_id = ? AND end_at IS NULL").get(user.id) ? loadOpenShift(db, user.id) : null);
   const openBreak = open?.breaks.find((b) => b.endAt === null) ?? null;
-  const status = !open ? "off" : openBreak ? "break" : "working";
+  const status: "off" | "break" | "working" = !open ? "off" : openBreak ? "break" : "working";
 
   const anomalies: Anomaly[] = [];
   for (const d of days.values()) if (d.date >= lookback && d.date <= todayIso) anomalies.push(...d.anomalies.filter((a) => a.code !== "incomplete"));
