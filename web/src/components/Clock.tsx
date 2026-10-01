@@ -1,4 +1,4 @@
-import { Coffee, Play, Square } from "lucide-react";
+import { Coffee, Play, Siren, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DateTime } from "luxon";
 import { formatDuration } from "@shared/format";
@@ -27,9 +27,13 @@ export function useLive(d: Dashboard | undefined) {
   };
 }
 
-export function StatusPill({ status, size = "md" }: { status: Dashboard["status"]; size?: "md" | "lg" }) {
+export const isIntervention = (d: Dashboard) => d.status !== "off" && d.openShift?.kind === "intervention";
+
+export function StatusPill({ status, intervention, size = "md" }: { status: Dashboard["status"]; intervention?: boolean; size?: "md" | "lg" }) {
   const map = {
-    working: { label: "En service", cls: "bg-ok-soft text-ok", dot: "bg-ok pulse-dot text-ok" },
+    working: intervention
+      ? { label: "En intervention", cls: "bg-bad-soft text-bad", dot: "bg-bad pulse-dot text-bad" }
+      : { label: "En service", cls: "bg-ok-soft text-ok", dot: "bg-ok pulse-dot text-ok" },
     break: { label: "En pause", cls: "bg-warn-soft text-warn", dot: "bg-warn" },
     off: { label: "Hors service", cls: "bg-surface-2 text-ink-3", dot: "bg-ink-3" },
   }[status];
@@ -52,7 +56,8 @@ export function ClockActions({ d, size = "lg" }: { d: Dashboard; size?: "lg" | "
   const clock = useClock();
   const invalidate = useInvalidateData();
   const [undo, setUndo] = useState<{ id: string; label: string } | null>(null);
-  const cfg = LABELS[d.status];
+  const intervention = isIntervention(d);
+  const cfg = intervention && d.status === "working" ? { text: "Terminer l'intervention", icon: Square, action: "stop" as const } : LABELS[d.status];
   const Icon = cfg.icon;
 
   useEffect(() => {
@@ -65,7 +70,7 @@ export function ClockActions({ d, size = "lg" }: { d: Dashboard; size?: "lg" | "
     const openId = d.openShift?.id;
     clock.mutate(cfg.action, {
       onSuccess: () => {
-        if (cfg.action === "stop" && openId) setUndo({ id: openId, label: "Journée terminée." });
+        if (cfg.action === "stop" && openId) setUndo({ id: openId, label: intervention ? "Intervention terminée." : "Journée terminée." });
       },
     });
   };
@@ -76,7 +81,7 @@ export function ClockActions({ d, size = "lg" }: { d: Dashboard; size?: "lg" | "
     const s = days?.days.flatMap((x) => x.shifts).find((x) => x.id === undo.id);
     setUndo(null);
     if (!s) return;
-    await api.put(`/shifts/${s.id}`, { startAt: s.startAt, endAt: null, breaks: s.breaks, note: s.note, bonusIds: s.bonusIds });
+    await api.put(`/shifts/${s.id}`, { startAt: s.startAt, endAt: null, breaks: s.breaks, note: s.note, bonusIds: s.bonusIds, kind: s.kind });
     invalidate();
   };
 
@@ -89,16 +94,22 @@ export function ClockActions({ d, size = "lg" }: { d: Dashboard; size?: "lg" | "
           "group flex w-full items-center justify-center gap-3 rounded-[22px] font-semibold uppercase tracking-wide shadow-lg transition active:scale-[0.98] disabled:opacity-70",
           size === "xl" ? "h-20 text-lg" : "h-16 text-base",
           d.status === "off" && "bg-accent text-accent-ink shadow-accent/25",
-          d.status === "working" && "bg-ink text-bg shadow-black/10",
+          d.status === "working" && !intervention && "bg-ink text-bg shadow-black/10",
+          d.status === "working" && intervention && "bg-bad text-white shadow-bad/25",
           d.status === "break" && "bg-ok text-white shadow-ok/25 dark:text-black",
         )}
       >
         <Icon className={cx(size === "xl" ? "size-6" : "size-5", "fill-current")} />
         {cfg.text}
       </button>
-      {d.status === "working" && (
+      {d.status === "working" && !intervention && (
         <Button variant="secondary" className="w-full" onClick={() => clock.mutate("break/start")} disabled={clock.isPending}>
           <Coffee className="size-4" /> Prendre une pause
+        </Button>
+      )}
+      {d.status === "off" && (
+        <Button variant="ghost" className="w-full text-bad" onClick={() => clock.mutate({ action: "start", kind: "intervention" })} disabled={clock.isPending} title="Appel d'urgence : ces heures comptent uniquement en heures supplémentaires">
+          <Siren className="size-4" /> Intervention d'urgence
         </Button>
       )}
       {clock.error && <p className="text-center text-sm text-bad">{(clock.error as Error).message}</p>}
@@ -116,7 +127,7 @@ export function ClockActions({ d, size = "lg" }: { d: Dashboard; size?: "lg" | "
 
 /** Phrase explicative de l'état courant. */
 export function StatusSentence({ d, live, zone }: { d: Dashboard; live: NonNullable<ReturnType<typeof useLive>>; zone: string }) {
-  if (d.status === "working" && d.openShift) return <>Depuis {hhmm(d.openShift.startAt, zone)}</>;
+  if (d.status === "working" && d.openShift) return <>{isIntervention(d) ? "Heures sup. depuis" : "Depuis"} {hhmm(d.openShift.startAt, zone)}</>;
   if (d.status === "break") return <>En pause depuis {formatDuration(live.breakElapsed)}</>;
   if (d.todayStart) return <>Journée terminée</>;
   return <>Prêt à commencer ?</>;

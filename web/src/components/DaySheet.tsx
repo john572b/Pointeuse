@@ -77,6 +77,7 @@ export function DaySheet({ date, onClose }: { date: string | null; onClose: () =
                       </p>
                       <p className="text-sm text-ink-3">
                         {s.breaks.length === 0 ? "Sans pause" : s.breaks.map((b) => `Pause ${hhmm(b.startAt, zone)}–${b.endAt ? hhmm(b.endAt, zone) : "…"}`).join(" · ")}
+                        {s.kind === "intervention" && " · intervention (heures sup.)"}
                         {s.editedAt && " · corrigé"}
                         {s.source === "manual" && " · saisi à la main"}
                       </p>
@@ -146,6 +147,7 @@ function ShiftEditor({ date, shift, onDone }: { date: string; shift: Shift | nul
   const [breaks, setBreaks] = useState(shift ? shift.breaks.map((b) => ({ start: hhmm(b.startAt, zone), end: b.endAt ? hhmm(b.endAt, zone) : "" })) : [{ start: "12:00", end: "13:00" }]);
   const [note, setNote] = useState(shift?.note ?? "");
   const [bonusIds, setBonusIds] = useState<string[]>(shift?.bonusIds ?? []);
+  const [intervention, setIntervention] = useState(shift?.kind === "intervention");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -168,6 +170,7 @@ function ShiftEditor({ date, shift, onDone }: { date: string; shift: Shift | nul
           }),
         note,
         bonusIds,
+        kind: intervention ? "intervention" : "normal",
       };
       if (shift) await api.put(`/shifts/${shift.id}`, body);
       else await api.post("/shifts", body);
@@ -213,6 +216,7 @@ function ShiftEditor({ date, shift, onDone }: { date: string; shift: Shift | nul
           </button>
         </div>
       </div>
+      <Toggle label="Intervention d'urgence" description="Appel en dehors des horaires : compté uniquement en heures supplémentaires" checked={intervention} onChange={setIntervention} />
       {manualBonuses.length > 0 && (
         <div>
           <p className="mb-1 text-sm font-medium text-ink-2">Primes de cette journée</p>

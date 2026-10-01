@@ -6,7 +6,7 @@ import { formatDuration, formatMoney } from "@shared/format";
 import { useDashboard, useUser } from "@/lib/hooks";
 import { capitalize, hhmm, shortDate } from "@/lib/dates";
 import { Card, EmptyState, SectionTitle, Sheet, Spinner, cx } from "@/components/ui";
-import { ClockActions, StatusPill, StatusSentence, useLive } from "@/components/Clock";
+import { ClockActions, StatusPill, StatusSentence, isIntervention, useLive } from "@/components/Clock";
 import { PayBreakdown } from "@/components/PayBreakdown";
 import { ProgressRing } from "@/components/ProgressRing";
 
@@ -38,7 +38,7 @@ export function Dashboard() {
       {/* Carte principale : statut + temps du jour + action */}
       <Card className="p-6">
         <div className="flex items-center justify-between">
-          <StatusPill status={d.status} />
+          <StatusPill status={d.status} intervention={isIntervention(d)} />
           <span className="text-sm text-ink-3">
             <StatusSentence d={d} live={live} zone={zone} />
           </span>

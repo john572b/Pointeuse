@@ -7,7 +7,7 @@ import { useDashboard, useUser } from "@/lib/hooks";
 import type { DaysResponse, Shift } from "@/lib/types";
 import { hhmm } from "@/lib/dates";
 import { Card, EmptyState, Spinner } from "@/components/ui";
-import { ClockActions, StatusPill, StatusSentence, useLive } from "@/components/Clock";
+import { ClockActions, StatusPill, StatusSentence, isIntervention, useLive } from "@/components/Clock";
 import { ProgressRing } from "@/components/ProgressRing";
 import { DayTimeline } from "@/components/DayTimeline";
 import { DaySheet } from "@/components/DaySheet";
@@ -36,7 +36,7 @@ export function ClockPage() {
 
   return (
     <div className="animate-in mx-auto flex max-w-md flex-col items-center">
-      <StatusPill status={d.status} size="lg" />
+      <StatusPill status={d.status} intervention={isIntervention(d)} size="lg" />
       <p className="mt-3 text-[15px] text-ink-3">
         <StatusSentence d={d} live={live} zone={zone} />
       </p>

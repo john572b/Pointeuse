@@ -19,6 +19,7 @@ const shiftBody = z
     breaks: z.array(z.object({ startAt: z.number().int().positive(), endAt: z.number().int().positive().nullable() })).max(20).default([]),
     note: z.string().trim().max(500).default(""),
     bonusIds: z.array(z.string().max(40)).max(30).default([]),
+    kind: z.enum(["normal", "intervention"]).default("normal"),
   })
   .superRefine((s, ctx) => {
     const end = s.endAt ?? Date.now();
@@ -53,7 +54,7 @@ const breakStmts = (shiftId: string, breaks: Array<{ startAt: number; endAt: num
 ];
 
 async function getShift(db: DB, userId: string, id: string) {
-  const row = await db.first<ShiftRow>("SELECT id, start_at, end_at, note, source, bonus_ids, edited_at FROM shifts WHERE id = ? AND user_id = ?", id, userId);
+  const row = await db.first<ShiftRow>("SELECT id, start_at, end_at, note, source, bonus_ids, edited_at, kind FROM shifts WHERE id = ? AND user_id = ?", id, userId);
   if (!row) throw new HttpError(404, "Journée introuvable.");
   return (await attachBreaks(db, [row]))[0];
 }
@@ -92,8 +93,8 @@ export function dataRoutes() {
     await ensureNoOverlap(db, user.id, b.startAt, b.endAt);
     await db.batch([
       [
-        "INSERT INTO shifts (id, user_id, start_at, end_at, note, source, bonus_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?)",
-        [id, user.id, b.startAt, b.endAt, b.note, JSON.stringify(b.bonusIds), now, now],
+        "INSERT INTO shifts (id, user_id, start_at, end_at, note, source, bonus_ids, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)",
+        [id, user.id, b.startAt, b.endAt, b.note, JSON.stringify(b.bonusIds), b.kind, now, now],
       ],
       ...breakStmts(id, b.breaks),
     ]);
@@ -109,7 +110,7 @@ export function dataRoutes() {
     await ensureNoOverlap(db, user.id, b.startAt, b.endAt, id);
     const now = Date.now();
     await db.batch([
-      ["UPDATE shifts SET start_at = ?, end_at = ?, note = ?, bonus_ids = ?, edited_at = ?, updated_at = ? WHERE id = ? AND user_id = ?", [b.startAt, b.endAt, b.note, JSON.stringify(b.bonusIds), now, now, id, user.id]],
+      ["UPDATE shifts SET start_at = ?, end_at = ?, note = ?, bonus_ids = ?, kind = ?, edited_at = ?, updated_at = ? WHERE id = ? AND user_id = ?", [b.startAt, b.endAt, b.note, JSON.stringify(b.bonusIds), b.kind, now, now, id, user.id]],
       ...breakStmts(id, b.breaks),
     ]);
     return c.json({ shift: await getShift(db, user.id, id) });

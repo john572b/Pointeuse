@@ -24,6 +24,8 @@ export interface ShiftInput {
   endAt: number | null;
   breaks: BreakInput[];
   bonusIds?: string[];
+  /** intervention : appel d'urgence hors horaires — chaque minute compte en heures supplémentaires. */
+  kind?: "normal" | "intervention";
 }
 export type AbsenceKind = "conge" | "maladie" | "recup" | "sans_solde" | "autre";
 export interface AbsenceInput {
@@ -193,7 +195,7 @@ function segmentize(a: number, b: number, rules: PayRules, ctx: EngineContext): 
   return segs;
 }
 
-function componentsFor(seg: Segment, overtime: boolean, rules: PayRules, ctx: EngineContext): PayComponent[] {
+function componentsFor(seg: Segment, overtime: boolean, rules: PayRules, ctx: EngineContext, intervention = false): PayComponent[] {
   const comps: PayComponent[] = [];
   if (seg.holiday) {
     comps.push({ key: "holiday", label: ctx.holidays.get(seg.calendarDate) ?? "Jour férié", percent: rules.holidayPercent });
@@ -202,7 +204,8 @@ function componentsFor(seg: Segment, overtime: boolean, rules: PayRules, ctx: En
     if (p !== 0) comps.push({ key: "weekday", label: DAY_NAMES[seg.weekday], percent: p });
   }
   if (seg.night && rules.night.percent !== 0) comps.push({ key: "night", label: "Nuit", percent: rules.night.percent });
-  if (overtime) comps.push({ key: "overtime", label: "Heures sup.", percent: rules.overtime.percent });
+  if (intervention) comps.push({ key: "overtime", label: "Intervention", percent: rules.overtime.percent });
+  else if (overtime) comps.push({ key: "overtime", label: "Heures sup.", percent: rules.overtime.percent });
   return comps;
 }
 
@@ -325,6 +328,7 @@ export function computeDays(shifts: ShiftInput[], absences: AbsenceInput[], ctx:
     const weeklyCap = rules.weeklyHours * HOUR;
     const pieces = piecesByDay.get(date) ?? [];
     piecesByDay.set(date, pieces);
+    const intervention = shift.kind === "intervention";
 
     for (const [a, b] of workIntervals(shift, ctx.now)) {
       for (const seg of segmentize(a, b, rules, ctx)) {
@@ -336,12 +340,15 @@ export function computeDays(shifts: ShiftInput[], absences: AbsenceInput[], ctx:
           const mode = rules.overtime.mode;
           if (mode === "daily" || mode === "both") cap = Math.min(cap, dailyCap - dw);
           if (mode === "weekly" || mode === "both") cap = Math.min(cap, weeklyCap - ww);
-          const normalPart = Math.max(0, Math.min(remaining, cap));
+          // Une intervention est entièrement en heures sup. et ne consomme pas les heures normales.
+          const normalPart = intervention ? 0 : Math.max(0, Math.min(remaining, cap));
           const part = normalPart > 0 ? normalPart : remaining;
           const overtime = normalPart <= 0;
-          pieces.push({ ms: part, comps: componentsFor(seg, overtime, rules, ctx), overtime, rules });
-          dayWorked.set(date, dw + part);
-          weekWorked.set(wk, ww + part);
+          pieces.push({ ms: part, comps: componentsFor(seg, overtime, rules, ctx, intervention), overtime, rules });
+          if (!intervention) {
+            dayWorked.set(date, dw + part);
+            weekWorked.set(wk, ww + part);
+          }
           day.workedMs += part;
           if (overtime) day.overtimeMs += part;
           else day.normalMs += part;
@@ -391,7 +398,8 @@ export function computeDays(shifts: ShiftInput[], absences: AbsenceInput[], ctx:
         }
       }
     }
-    if (!day.open && day.workedMs > 0 && rules.dailyHours > 0 && rules.workdays.includes(DateTime.fromISO(date).weekday) && day.workedMs < rules.dailyHours * HOUR * 0.5) {
+    const hasNormalShift = dayShifts.some((s) => s.kind !== "intervention");
+    if (hasNormalShift && !day.open && day.workedMs > 0 && rules.dailyHours > 0 && rules.workdays.includes(DateTime.fromISO(date).weekday) && day.workedMs < rules.dailyHours * HOUR * 0.5) {
       day.anomalies.push({ code: "incomplete", date, message: "Journée incomplète (moins de la moitié des heures prévues)." });
     }
   }

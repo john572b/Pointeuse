@@ -33,11 +33,15 @@ export function useDashboard() {
 }
 
 export type ClockAction = "start" | "stop" | "break/start" | "break/end";
+export type ClockInput = ClockAction | { action: ClockAction; kind?: "normal" | "intervention" };
 
 export function useClock() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (action: ClockAction) => api.post<Dashboard>(`/clock/${action}`),
+    mutationFn: (input: ClockInput) => {
+      const { action, kind } = typeof input === "string" ? { action: input, kind: undefined } : input;
+      return api.post<Dashboard>(`/clock/${action}`, kind ? { kind } : {});
+    },
     onSuccess: (d) => {
       qc.setQueryData(["dashboard"], d);
       qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "dashboard" && q.queryKey[0] !== "me" });

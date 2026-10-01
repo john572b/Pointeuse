@@ -70,6 +70,19 @@ describe("API", () => {
     expect(r.json.recent).toHaveLength(1);
   });
 
+  it("clocks an emergency intervention as overtime only", async () => {
+    const h = await register("urgence@example.com");
+    let r = await call("POST", "/api/clock/start", { headers: h, body: { kind: "intervention" } });
+    expect(r.json.status).toBe("working");
+    expect(r.json.openShift.kind).toBe("intervention");
+    r = await call("POST", "/api/clock/stop", { headers: h });
+    expect(r.json.status).toBe("off");
+    const day = (await call("GET", `/api/days?from=${iso(-1)}&to=${iso(1)}`, { headers: h })).json.days.find((d: any) => d.shifts.length > 0);
+    expect(day.shifts[0].kind).toBe("intervention");
+    expect(day.normalMs).toBe(0);
+    expect(day.overtimeMs).toBe(day.workedMs);
+  });
+
   it("strictly isolates accounts", async () => {
     const alice = await register("alice@example.com");
     const bob = await register("bob@example.com");

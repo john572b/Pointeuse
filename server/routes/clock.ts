@@ -7,7 +7,7 @@ import { dashboard, loadOpenShift } from "../services/overview";
 
 /** Position optionnelle (prévue pour la vérification du lieu de travail, désactivée par défaut). */
 const locationSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0).max(100000) }).optional();
-const bodySchema = z.object({ location: locationSchema }).default({});
+const bodySchema = z.object({ location: locationSchema, kind: z.enum(["normal", "intervention"]).default("normal") }).default({ kind: "normal" });
 
 export function clockRoutes() {
   const r = new Hono<AppEnv>();
@@ -17,17 +17,18 @@ export function clockRoutes() {
   r.post("/clock/start", async (c) => {
     const user = requireUser(c);
     const db = c.get("db");
-    const { location } = bodySchema.parse(await body(c));
+    const { location, kind } = bodySchema.parse(await body(c));
     const loc = prefsOf(user).geolocation ? location : undefined;
     const now = Date.now();
     // L'index unique « une seule journée ouverte » protège aussi contre deux appuis simultanés.
     if (await loadOpenShift(db, user.id)) throw new HttpError(409, "Votre journée est déjà commencée.");
     try {
       await db.run(
-        "INSERT INTO shifts (id, user_id, start_at, source, start_lat, start_lng, start_accuracy, created_at, updated_at) VALUES (?, ?, ?, 'clock', ?, ?, ?, ?, ?)",
+        "INSERT INTO shifts (id, user_id, start_at, source, kind, start_lat, start_lng, start_accuracy, created_at, updated_at) VALUES (?, ?, ?, 'clock', ?, ?, ?, ?, ?, ?)",
         uuid(),
         user.id,
         now,
+        kind,
         loc?.lat ?? null,
         loc?.lng ?? null,
         loc?.accuracy ?? null,

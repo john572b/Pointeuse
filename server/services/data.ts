@@ -105,6 +105,7 @@ export interface ShiftRow {
   source: string;
   bonus_ids: string;
   edited_at: number | null;
+  kind: string;
 }
 
 export interface ShiftDTO {
@@ -115,13 +116,14 @@ export interface ShiftDTO {
   source: string;
   bonusIds: string[];
   editedAt: number | null;
+  kind: "normal" | "intervention";
   breaks: Array<{ id: string; startAt: number; endAt: number | null }>;
 }
 
 /** Charge les journées de l'utilisateur qui commencent dans [fromMs, toMs). */
 export async function loadShifts(db: DB, userId: string, fromMs: number, toMs: number): Promise<ShiftDTO[]> {
   const rows = await db.all<ShiftRow>(
-    "SELECT id, start_at, end_at, note, source, bonus_ids, edited_at FROM shifts WHERE user_id = ? AND start_at >= ? AND start_at < ? ORDER BY start_at",
+    "SELECT id, start_at, end_at, note, source, bonus_ids, edited_at, kind FROM shifts WHERE user_id = ? AND start_at >= ? AND start_at < ? ORDER BY start_at",
     userId,
     fromMs,
     toMs,
@@ -150,6 +152,7 @@ export async function attachBreaks(db: DB, rows: ShiftRow[]): Promise<ShiftDTO[]
     source: r.source,
     bonusIds: safeJsonArray(r.bonus_ids),
     editedAt: r.edited_at,
+    kind: r.kind === "intervention" ? "intervention" : "normal",
     breaks: byShift.get(r.id) ?? [],
   }));
 }
@@ -168,7 +171,7 @@ export async function loadAbsences(db: DB, userId: string, from: string, to: str
   return rows.map((a) => ({ id: a.id, date: a.date, kind: a.kind, paid: !!a.paid, hours: a.hours, note: a.note }));
 }
 
-export const toEngineShift = (s: ShiftDTO): ShiftInput => ({ id: s.id, startAt: s.startAt, endAt: s.endAt, breaks: s.breaks, bonusIds: s.bonusIds });
+export const toEngineShift = (s: ShiftDTO): ShiftInput => ({ id: s.id, startAt: s.startAt, endAt: s.endAt, breaks: s.breaks, bonusIds: s.bonusIds, kind: s.kind });
 
 /** Bornes en ms d'une plage de dates locales [from, to] (to inclus). */
 export function dateRangeMs(from: string, to: string, zone: string): [number, number] {

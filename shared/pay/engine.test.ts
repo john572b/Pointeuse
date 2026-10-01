@@ -76,6 +76,27 @@ describe("pay engine", () => {
     expect(s.amountCents).toBe(35 * 2000 + 5 * 2500);
   });
 
+  it("counts an emergency intervention entirely as overtime without consuming normal hours", () => {
+    const c = ctx({ hourlyRate: 10, weeklyHours: 40, dailyHours: 8, overtime: { mode: "weekly", percent: 50 }, night: { enabled: true, start: "22:00", end: "06:00", percent: 20 } });
+    const days = computeDays(
+      [shift("day", "2026-03-03T08:00", "2026-03-03T16:00"), { ...shift("urg", "2026-03-03T20:00", "2026-03-03T23:00"), kind: "intervention" as const }],
+      [],
+      c,
+    );
+    const d = days.get("2026-03-03")!;
+    expect(d.workedMs).toBe(11 * H);
+    expect(d.normalMs).toBe(8 * H);
+    expect(d.overtimeMs).toBe(3 * H);
+    // 8 h × 10 + 2 h × 10 × 1,5 (intervention) + 1 h × 10 × 1,7 (intervention + nuit)
+    expect(d.amountCents).toBe(8000 + 3000 + 1700);
+    expect(d.lines.map((l) => l.label)).toContain("Intervention");
+    expect(d.anomalies).toEqual([]);
+    // Le lendemain, les heures normales de la semaine ne sont pas entamées par l'intervention.
+    const next = computeDays([{ ...shift("urg", "2026-03-03T20:00", "2026-03-03T23:00"), kind: "intervention" as const }, shift("d2", "2026-03-04T08:00", "2026-03-04T16:00")], [], c);
+    expect(next.get("2026-03-04")!.overtimeMs).toBe(0);
+    expect(next.get("2026-03-03")!.status).toBe("complete");
+  });
+
   it("applies daily overtime", () => {
     const c = ctx({ hourlyRate: 10, dailyHours: 8, overtime: { mode: "daily", percent: 50 } });
     const days = computeDays([shift("a", "2026-03-03T07:00", "2026-03-03T17:00")], [], c);
