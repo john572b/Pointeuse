@@ -4,12 +4,10 @@ import { computeDays, missingDays, summarize, type Anomaly, type DayResult, type
 import { buildContext, dateRangeMs, loadAbsences, loadShifts, prefsOf, toEngineShift, type ShiftDTO, type UserRow } from "./data";
 
 /** Calcule les journées sur [from, to] en chargeant depuis le lundi de la semaine de `from` (heures sup. hebdo exactes). */
-export function computeRange(db: DB, user: UserRow, from: string, to: string, now = Date.now()) {
-  const ctx = buildContext(db, user, now);
+export async function computeRange(db: DB, user: UserRow, from: string, to: string, now = Date.now()) {
   const loadFrom = DateTime.fromISO(from, { zone: user.timezone }).startOf("week").toISODate()!;
   const [a, b] = dateRangeMs(loadFrom, to, user.timezone);
-  const shifts = loadShifts(db, user.id, a, b);
-  const absences = loadAbsences(db, user.id, loadFrom, to);
+  const [ctx, shifts, absences] = await Promise.all([buildContext(db, user, now), loadShifts(db, user.id, a, b), loadAbsences(db, user.id, loadFrom, to)]);
   const days = computeDays(shifts.map(toEngineShift), absences, ctx);
   return { ctx, days, shifts, absences };
 }
@@ -19,8 +17,8 @@ export interface DayView extends Omit<DayResult, "absence"> {
   shifts: ShiftDTO[];
 }
 
-export function dayViews(db: DB, user: UserRow, from: string, to: string): { days: DayView[]; missing: Anomaly[] } {
-  const { ctx, days, shifts, absences } = computeRange(db, user, from, to);
+export async function dayViews(db: DB, user: UserRow, from: string, to: string): Promise<{ days: DayView[]; missing: Anomaly[] }> {
+  const { ctx, days, shifts, absences } = await computeRange(db, user, from, to);
   const out: DayView[] = [];
   for (const d of [...days.values()].sort((x, y) => x.date.localeCompare(y.date))) {
     if (d.date < from || d.date > to) continue;
@@ -35,16 +33,16 @@ export function dayViews(db: DB, user: UserRow, from: string, to: string): { day
 }
 
 function brief(s: PeriodSummary) {
-  return {
-    workedMs: s.workedMs,
-    breakMs: s.breakMs,
-    overtimeMs: s.overtimeMs,
-    amountCents: s.amountCents,
-    daysWorked: s.daysWorked,
-  };
+  return { workedMs: s.workedMs, breakMs: s.breakMs, overtimeMs: s.overtimeMs, amountCents: s.amountCents, daysWorked: s.daysWorked };
 }
 
-export function dashboard(db: DB, user: UserRow, now = Date.now()) {
+export async function loadOpenShift(db: DB, userId: string): Promise<ShiftDTO | null> {
+  const row = await db.first<{ start_at: number }>("SELECT start_at FROM shifts WHERE user_id = ? AND end_at IS NULL", userId);
+  if (!row) return null;
+  return (await loadShifts(db, userId, row.start_at, row.start_at + 1)).find((s) => s.endAt === null) ?? null;
+}
+
+export async function dashboard(db: DB, user: UserRow, now = Date.now()) {
   const zone = user.timezone;
   const today = DateTime.fromMillis(now, { zone });
   const todayIso = today.toISODate()!;
@@ -56,7 +54,7 @@ export function dashboard(db: DB, user: UserRow, now = Date.now()) {
   const from = [weekStart, monthStart, lookback].sort()[0];
   const to = [weekEnd, monthEnd].sort()[1];
 
-  const { ctx, days, shifts } = computeRange(db, user, from, to, now);
+  const { ctx, days, shifts } = await computeRange(db, user, from, to, now);
   const todaySum = summarize(days, todayIso, todayIso, ctx);
   const week = summarize(days, weekStart, weekEnd, ctx);
   const month = summarize(days, monthStart, monthEnd, ctx);
@@ -65,7 +63,7 @@ export function dashboard(db: DB, user: UserRow, now = Date.now()) {
   const prefs = prefsOf(user);
   const goalHours = prefs.weeklyGoalHours ?? rules.weeklyHours;
 
-  const open = shifts.find((s) => s.endAt === null) ?? (db.prepare("SELECT id FROM shifts WHERE user_id = ? AND end_at IS NULL").get(user.id) ? loadOpenShift(db, user.id) : null);
+  const open = shifts.find((s) => s.endAt === null) ?? (await loadOpenShift(db, user.id));
   const openBreak = open?.breaks.find((b) => b.endAt === null) ?? null;
   const status: "off" | "break" | "working" = !open ? "off" : openBreak ? "break" : "working";
 
@@ -80,11 +78,9 @@ export function dashboard(db: DB, user: UserRow, now = Date.now()) {
     .slice(0, 5)
     .map((d) => ({ date: d.date, firstStart: d.firstStart, lastEnd: d.lastEnd, workedMs: d.workedMs, open: d.open, status: d.status, amountCents: d.amountCents }));
 
-  // Semaine jour par jour (mini graphique).
   const weekDays = Array.from({ length: 7 }, (_, i) => {
     const iso = today.startOf("week").plus({ days: i }).toISODate()!;
-    const d = days.get(iso);
-    return { date: iso, workedMs: d?.workedMs ?? 0 };
+    return { date: iso, workedMs: days.get(iso)?.workedMs ?? 0 };
   });
 
   const todayDay = days.get(todayIso);
@@ -105,43 +101,41 @@ export function dashboard(db: DB, user: UserRow, now = Date.now()) {
   };
 }
 
-export function loadOpenShift(db: DB, userId: string): ShiftDTO | null {
-  const row = db.prepare("SELECT start_at FROM shifts WHERE user_id = ? AND end_at IS NULL").get(userId) as { start_at: number } | undefined;
-  if (!row) return null;
-  return loadShifts(db, userId, row.start_at, row.start_at + 1).find((s) => s.endAt === null) ?? null;
-}
-
 type Granularity = "day" | "week" | "month";
 
-export function stats(db: DB, user: UserRow, from: string, to: string, now = Date.now()) {
+export async function stats(db: DB, user: UserRow, from: string, to: string, now = Date.now()) {
   const zone = user.timezone;
   const todayIso = DateTime.fromMillis(now, { zone }).toISODate()!;
-  const { ctx, days } = computeRange(db, user, from, to, now);
-  const summary = summarize(days, from, to, ctx);
-
   const start = DateTime.fromISO(from, { zone });
   const end = DateTime.fromISO(to, { zone });
   const spanDays = Math.round(end.diff(start, "days").days) + 1;
-  const granularity: Granularity = spanDays <= 31 ? "day" : spanDays <= 120 ? "week" : "month";
+  const prevTo = start.minus({ days: 1 });
+  const prevFrom = prevTo.minus({ days: spanDays - 1 });
 
+  const [cur, prev] = await Promise.all([computeRange(db, user, from, to, now), computeRange(db, user, prevFrom.toISODate()!, prevTo.toISODate()!, now)]);
+  const { ctx, days } = cur;
+  const summary = summarize(days, from, to, ctx);
+  const prevSummary = summarize(prev.days, prevFrom.toISODate()!, prevTo.toISODate()!, prev.ctx);
+
+  const granularity: Granularity = spanDays <= 31 ? "day" : spanDays <= 120 ? "week" : "month";
   const buckets: Array<{ key: string; label: string; from: string; to: string }> = [];
-  let cur = granularity === "day" ? start : start.startOf(granularity);
-  while (cur <= end) {
-    const bEnd = granularity === "day" ? cur : cur.endOf(granularity);
-    const bFrom = cur < start ? start : cur;
+  let curDt = granularity === "day" ? start : start.startOf(granularity);
+  while (curDt <= end) {
+    const bEnd = granularity === "day" ? curDt : curDt.endOf(granularity);
+    const bFrom = curDt < start ? start : curDt;
     const bTo = bEnd > end ? end : bEnd;
     buckets.push({
-      key: cur.toISODate()!,
+      key: curDt.toISODate()!,
       label:
         granularity === "day"
-          ? cur.setLocale("fr").toFormat("ccc d")
+          ? curDt.setLocale("fr").toFormat("ccc d")
           : granularity === "week"
-            ? `S${cur.weekNumber}`
-            : cur.setLocale("fr").toFormat(spanDays > 400 ? "LLL yy" : "LLL"),
+            ? `S${curDt.weekNumber}`
+            : curDt.setLocale("fr").toFormat(spanDays > 400 ? "LLL yy" : "LLL"),
       from: bFrom.toISODate()!,
       to: bTo.toISODate()!,
     });
-    cur = cur.plus({ [granularity + "s"]: 1 } as any).startOf(granularity);
+    curDt = curDt.plus({ [granularity + "s"]: 1 } as any).startOf(granularity);
   }
   const series = buckets.map((b) => {
     const s = summarize(days, b.from, b.to, ctx);
@@ -155,12 +149,6 @@ export function stats(db: DB, user: UserRow, from: string, to: string, now = Dat
       daysWorked: s.daysWorked,
     };
   });
-
-  // Période précédente de même durée pour comparaison.
-  const prevTo = start.minus({ days: 1 });
-  const prevFrom = prevTo.minus({ days: spanDays - 1 });
-  const prev = computeRange(db, user, prevFrom.toISODate()!, prevTo.toISODate()!, now);
-  const prevSummary = summarize(prev.days, prevFrom.toISODate()!, prevTo.toISODate()!, prev.ctx);
 
   // Moyennes : on ne compte que la partie écoulée de la période.
   const elapsedEnd = to < todayIso ? end : DateTime.fromISO(todayIso, { zone });

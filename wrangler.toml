@@ -1,0 +1,40 @@
+name = "pointeuse"
+main = "server/worker.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# Domaine : https://pointeuse.boi.lu (la zone boi.lu doit être dans le compte Cloudflare)
+routes = [{ pattern = "pointeuse.boi.lu", custom_domain = true }]
+
+[vars]
+APP_URL = "https://pointeuse.boi.lu"
+# Secrets (wrangler secret put) : PASSWORD_PEPPER (obligatoire), RESEND_API_KEY, MAIL_FROM,
+# VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT
+
+# Interface (build Vite) : toute route inconnue renvoie l'application, /api/* passe toujours par le Worker.
+[assets]
+directory = "dist/web"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+html_handling = "auto-trailing-slash"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pointeuse"
+database_id = "30690b28-a2fc-4ab3-86d5-f8da072fae4d"
+migrations_dir = "migrations"
+
+# Limitation des tentatives d'authentification : 10 par minute et par adresse IP.
+[[unsafe.bindings]]
+name = "AUTH_LIMIT"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+# Rappels push + nettoyage, toutes les 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true

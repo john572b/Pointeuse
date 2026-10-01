@@ -1,5 +1,0 @@
-# HTTPS automatique (Let's Encrypt) pour pointeuse.boi.lu
-pointeuse.boi.lu {
-	encode zstd gzip
-	reverse_proxy app:3000
-}

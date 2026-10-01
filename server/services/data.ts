@@ -40,8 +40,8 @@ export function prefsOf(u: UserRow): Prefs {
   }
 }
 
-export function publicUser(db: DB, u: UserRow) {
-  const credentials = db.prepare("SELECT COUNT(*) AS n FROM webauthn_credentials WHERE user_id = ?").get(u.id) as { n: number };
+export async function publicUser(db: DB, u: UserRow) {
+  const credentials = await db.first<{ n: number }>("SELECT COUNT(*) AS n FROM webauthn_credentials WHERE user_id = ?", u.id);
   return {
     id: u.id,
     email: u.email,
@@ -52,10 +52,12 @@ export function publicUser(db: DB, u: UserRow) {
     holidayCountry: u.holiday_country,
     prefs: prefsOf(u),
     onboarded: u.onboarded_at !== null,
-    hasBiometrics: credentials.n > 0,
+    hasBiometrics: (credentials?.n ?? 0) > 0,
     createdAt: u.created_at,
   };
 }
+
+export const getUser = (db: DB, id: string) => db.first<UserRow>("SELECT * FROM users WHERE id = ?", id) as Promise<UserRow>;
 
 export interface RuleVersion {
   id: string;
@@ -63,8 +65,9 @@ export interface RuleVersion {
   rules: PayRules;
 }
 
-export function loadRuleVersions(db: DB, userId: string): RuleVersion[] {
-  return (db.prepare("SELECT id, effective_from, rules FROM pay_rule_versions WHERE user_id = ? ORDER BY effective_from").all(userId) as any[]).map((r) => {
+export async function loadRuleVersions(db: DB, userId: string): Promise<RuleVersion[]> {
+  const rows = await db.all("SELECT id, effective_from, rules FROM pay_rule_versions WHERE user_id = ? ORDER BY effective_from", userId);
+  return rows.map((r) => {
     const parsed = payRulesSchema.safeParse(JSON.parse(r.rules));
     return { id: r.id, effectiveFrom: r.effective_from, rules: parsed.success ? parsed.data : DEFAULT_RULES };
   });
@@ -83,15 +86,13 @@ export function makeRulesFor(versions: RuleVersion[]) {
   };
 }
 
-export function buildContext(db: DB, user: UserRow, now = Date.now()): EngineContext {
-  const holidays = new Map<string, string>(
-    (db.prepare("SELECT date, name FROM holidays WHERE user_id = ?").all(user.id) as any[]).map((h) => [h.date, h.name]),
-  );
+export async function buildContext(db: DB, user: UserRow, now = Date.now()): Promise<EngineContext> {
+  const [holidayRows, versions] = await Promise.all([db.all("SELECT date, name FROM holidays WHERE user_id = ?", user.id), loadRuleVersions(db, user.id)]);
   return {
     zone: user.timezone,
     now,
-    holidays,
-    rulesFor: makeRulesFor(loadRuleVersions(db, user.id)),
+    holidays: new Map(holidayRows.map((h) => [h.date, h.name])),
+    rulesFor: makeRulesFor(versions),
     since: DateTime.fromMillis(user.created_at, { zone: user.timezone }).toISODate()!,
   };
 }
@@ -118,22 +119,23 @@ export interface ShiftDTO {
 }
 
 /** Charge les journées de l'utilisateur qui commencent dans [fromMs, toMs). */
-export function loadShifts(db: DB, userId: string, fromMs: number, toMs: number): ShiftDTO[] {
-  const rows = db
-    .prepare("SELECT id, start_at, end_at, note, source, bonus_ids, edited_at FROM shifts WHERE user_id = ? AND start_at >= ? AND start_at < ? ORDER BY start_at")
-    .all(userId, fromMs, toMs) as ShiftRow[];
+export async function loadShifts(db: DB, userId: string, fromMs: number, toMs: number): Promise<ShiftDTO[]> {
+  const rows = await db.all<ShiftRow>(
+    "SELECT id, start_at, end_at, note, source, bonus_ids, edited_at FROM shifts WHERE user_id = ? AND start_at >= ? AND start_at < ? ORDER BY start_at",
+    userId,
+    fromMs,
+    toMs,
+  );
   return attachBreaks(db, rows);
 }
 
-export function attachBreaks(db: DB, rows: ShiftRow[]): ShiftDTO[] {
+export async function attachBreaks(db: DB, rows: ShiftRow[]): Promise<ShiftDTO[]> {
   if (rows.length === 0) return [];
   const byShift = new Map<string, ShiftDTO["breaks"]>();
   const ids = rows.map((r) => r.id);
-  for (let i = 0; i < ids.length; i += 500) {
-    const chunk = ids.slice(i, i + 500);
-    const breaks = db
-      .prepare(`SELECT id, shift_id, start_at, end_at FROM breaks WHERE shift_id IN (${chunk.map(() => "?").join(",")}) ORDER BY start_at`)
-      .all(...chunk) as any[];
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const breaks = await db.all(`SELECT id, shift_id, start_at, end_at FROM breaks WHERE shift_id IN (${chunk.map(() => "?").join(",")}) ORDER BY start_at`, ...chunk);
     for (const b of breaks) {
       const list = byShift.get(b.shift_id) ?? [];
       list.push({ id: b.id, startAt: b.start_at, endAt: b.end_at });
@@ -161,10 +163,9 @@ function safeJsonArray(s: string): string[] {
   }
 }
 
-export function loadAbsences(db: DB, userId: string, from: string, to: string): Array<AbsenceInput & { id: string; note: string }> {
-  return (db.prepare("SELECT id, date, kind, paid, hours, note FROM absences WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date").all(userId, from, to) as any[]).map(
-    (a) => ({ id: a.id, date: a.date, kind: a.kind, paid: !!a.paid, hours: a.hours, note: a.note }),
-  );
+export async function loadAbsences(db: DB, userId: string, from: string, to: string): Promise<Array<AbsenceInput & { id: string; note: string }>> {
+  const rows = await db.all("SELECT id, date, kind, paid, hours, note FROM absences WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date", userId, from, to);
+  return rows.map((a) => ({ id: a.id, date: a.date, kind: a.kind, paid: !!a.paid, hours: a.hours, note: a.note }));
 }
 
 export const toEngineShift = (s: ShiftDTO): ShiftInput => ({ id: s.id, startAt: s.startAt, endAt: s.endAt, breaks: s.breaks, bonusIds: s.bonusIds });

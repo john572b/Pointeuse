@@ -1,16 +1,17 @@
-import nodemailer from "nodemailer";
-import { config } from "../config";
+import type { Env } from "../env";
 
-let transport: ReturnType<typeof nodemailer.createTransport> | null = null;
-
-export async function sendMail(to: string, subject: string, text: string, html?: string) {
-  if (!config.smtp) {
-    // Sans SMTP configuré (développement), le message est affiché dans la console.
-    console.info(`\n✉️  [mail non envoyé — SMTP_URL absent]\nÀ : ${to}\nObjet : ${subject}\n\n${text}\n`);
+/** Envoi d'e-mails via l'API Resend (secret RESEND_API_KEY). Sans clé : message dans les journaux. */
+export async function sendMail(env: Env, to: string, subject: string, text: string, html?: string) {
+  if (!env.RESEND_API_KEY) {
+    console.info(`[mail non envoyé — RESEND_API_KEY absent] À : ${to} · Objet : ${subject}\n${text}`);
     return;
   }
-  transport ??= nodemailer.createTransport(config.smtp.url);
-  await transport.sendMail({ from: config.smtp.from, to, subject, text, html });
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: env.MAIL_FROM ?? "Pointeuse <no-reply@boi.lu>", to: [to], subject, text, html }),
+  });
+  if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
 }
 
 export function layout(title: string, body: string, cta?: { label: string; url: string }) {

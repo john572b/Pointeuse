@@ -1,9 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import { Hono } from "hono";
 import { z } from "zod";
-import { HttpError, requireUser } from "../app";
+import { HttpError, body, rateLimit, requireUser, type AppEnv } from "../app";
 import { hashPassword, verifyPassword } from "../auth/crypto";
 import { destroySession } from "../auth/session";
-import { DEFAULT_PREFS, prefsOf, publicUser, type UserRow } from "../services/data";
+import { DEFAULT_PREFS, getUser, prefsOf, publicUser } from "../services/data";
 import { emailSchema, firstNameSchema, passwordSchema } from "../../shared/schemas";
 import { isValidZone } from "./auth";
 
@@ -17,13 +17,13 @@ const prefsSchema = z
   })
   .partial();
 
-export async function accountRoutes(app: FastifyInstance) {
-  const db = app.db;
-  const fresh = (id: string) => db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow;
+export function accountRoutes() {
+  const r = new Hono<AppEnv>();
 
-  app.patch("/account/profile", async (req) => {
-    const user = requireUser(req);
-    const body = z
+  r.patch("/account/profile", async (c) => {
+    const user = requireUser(c);
+    const db = c.get("db");
+    const b = z
       .object({
         firstName: firstNameSchema,
         timezone: z.string().max(64).refine(isValidZone, "Fuseau horaire inconnu."),
@@ -32,60 +32,71 @@ export async function accountRoutes(app: FastifyInstance) {
         prefs: prefsSchema,
       })
       .partial()
-      .parse(req.body);
-    const prefs = body.prefs ? { ...DEFAULT_PREFS, ...prefsOf(user), ...body.prefs } : prefsOf(user);
-    db.prepare("UPDATE users SET first_name = ?, timezone = ?, currency = ?, theme = ?, prefs = ?, updated_at = ? WHERE id = ?").run(
-      body.firstName ?? user.first_name,
-      body.timezone ?? user.timezone,
-      body.currency ?? user.currency,
-      body.theme ?? user.theme,
+      .parse(await body(c));
+    const prefs = b.prefs ? { ...DEFAULT_PREFS, ...prefsOf(user), ...b.prefs } : prefsOf(user);
+    await db.run(
+      "UPDATE users SET first_name = ?, timezone = ?, currency = ?, theme = ?, prefs = ?, updated_at = ? WHERE id = ?",
+      b.firstName ?? user.first_name,
+      b.timezone ?? user.timezone,
+      b.currency ?? user.currency,
+      b.theme ?? user.theme,
       JSON.stringify(prefs),
       Date.now(),
       user.id,
     );
-    return { user: publicUser(db, fresh(user.id)) };
+    return c.json({ user: await publicUser(db, await getUser(db, user.id)) });
   });
 
-  app.post("/account/onboarded", async (req) => {
-    const user = requireUser(req);
-    db.prepare("UPDATE users SET onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?").run(Date.now(), user.id);
-    return { user: publicUser(db, fresh(user.id)) };
+  r.post("/account/onboarded", async (c) => {
+    const user = requireUser(c);
+    const db = c.get("db");
+    await db.run("UPDATE users SET onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?", Date.now(), user.id);
+    return c.json({ user: await publicUser(db, await getUser(db, user.id)) });
   });
 
-  app.post("/account/password", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (req) => {
-    const user = requireUser(req);
-    const body = z.object({ current: z.string().max(200), next: passwordSchema }).parse(req.body);
-    if (!(await verifyPassword(user.password_hash, body.current))) throw new HttpError(400, "Mot de passe actuel incorrect.");
-    const hash = await hashPassword(body.next);
-    db.transaction(() => {
-      db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(hash, Date.now(), user.id);
+  r.post("/account/password", async (c) => {
+    await rateLimit(c, "password");
+    const user = requireUser(c);
+    const db = c.get("db");
+    const pepper = c.get("cfg").pepper;
+    const b = z.object({ current: z.string().max(200), next: passwordSchema }).parse(await body(c));
+    if (!(await verifyPassword(user.password_hash, b.current, pepper))) throw new HttpError(400, "Mot de passe actuel incorrect.");
+    const hash = await hashPassword(b.next, pepper);
+    await db.batch([
+      ["UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", [hash, Date.now(), user.id]],
       // Déconnecte tous les autres appareils.
-      db.prepare("DELETE FROM sessions WHERE user_id = ? AND id != ?").run(user.id, req.sessionId);
-    })();
-    return { ok: true };
+      ["DELETE FROM sessions WHERE user_id = ? AND id != ?", [user.id, c.get("sessionId")]],
+    ]);
+    return c.json({ ok: true });
   });
 
-  app.post("/account/email", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (req) => {
-    const user = requireUser(req);
-    const body = z.object({ password: z.string().max(200), email: emailSchema }).parse(req.body);
-    if (!(await verifyPassword(user.password_hash, body.password))) throw new HttpError(400, "Mot de passe incorrect.");
-    if (db.prepare("SELECT 1 FROM users WHERE email = ? AND id != ?").get(body.email, user.id)) throw new HttpError(409, "Cette adresse est déjà utilisée.");
-    db.prepare("UPDATE users SET email = ?, updated_at = ? WHERE id = ?").run(body.email, Date.now(), user.id);
-    return { user: publicUser(db, fresh(user.id)) };
+  r.post("/account/email", async (c) => {
+    await rateLimit(c, "email");
+    const user = requireUser(c);
+    const db = c.get("db");
+    const b = z.object({ password: z.string().max(200), email: emailSchema }).parse(await body(c));
+    if (!(await verifyPassword(user.password_hash, b.password, c.get("cfg").pepper))) throw new HttpError(400, "Mot de passe incorrect.");
+    if (await db.first("SELECT 1 FROM users WHERE email = ? AND id != ?", b.email, user.id)) throw new HttpError(409, "Cette adresse est déjà utilisée.");
+    await db.run("UPDATE users SET email = ?, updated_at = ? WHERE id = ?", b.email, Date.now(), user.id);
+    return c.json({ user: await publicUser(db, await getUser(db, user.id)) });
   });
 
-  app.post("/account/logout-others", async (req) => {
-    const user = requireUser(req);
-    const r = db.prepare("DELETE FROM sessions WHERE user_id = ? AND id != ?").run(user.id, req.sessionId);
-    return { ok: true, count: r.changes };
+  r.post("/account/logout-others", async (c) => {
+    const user = requireUser(c);
+    const res = await c.get("db").run("DELETE FROM sessions WHERE user_id = ? AND id != ?", user.id, c.get("sessionId"));
+    return c.json({ ok: true, count: res.changes });
   });
 
-  app.post("/account/delete", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (req, reply) => {
-    const user = requireUser(req);
-    const body = z.object({ password: z.string().max(200) }).parse(req.body);
-    if (!(await verifyPassword(user.password_hash, body.password))) throw new HttpError(400, "Mot de passe incorrect.");
-    destroySession(db, req, reply);
-    db.prepare("DELETE FROM users WHERE id = ?").run(user.id); // cascade sur toutes les données
-    return { ok: true };
+  r.post("/account/delete", async (c) => {
+    await rateLimit(c, "delete");
+    const user = requireUser(c);
+    const db = c.get("db");
+    const b = z.object({ password: z.string().max(200) }).parse(await body(c));
+    if (!(await verifyPassword(user.password_hash, b.password, c.get("cfg").pepper))) throw new HttpError(400, "Mot de passe incorrect.");
+    await destroySession(db, c, c.get("cfg"));
+    await db.run("DELETE FROM users WHERE id = ?", user.id); // cascade sur toutes les données
+    return c.json({ ok: true });
   });
+
+  return r;
 }

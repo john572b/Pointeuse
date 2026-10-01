@@ -1,12 +1,12 @@
-import webpush from "web-push";
+import { buildPushPayload } from "@block65/webcrypto-web-push";
 import { DateTime } from "luxon";
-import { config } from "../config";
 import type { DB } from "../db";
+import type { Env } from "../env";
 import { prefsOf, type UserRow } from "../services/data";
 import { dashboard } from "../services/overview";
 
 /**
- * Rappels intelligents envoyés par Web Push.
+ * Rappels intelligents envoyés par Web Push (déclenchés par le cron du Worker toutes les 5 minutes).
  * Anti-spam : chaque rappel a une clé unique (par journée / pause / semaine) et n'est envoyé qu'une fois ;
  * aucun rappel la nuit (22 h – 7 h, heure de l'utilisateur) sauf si une journée est en cours.
  */
@@ -16,10 +16,10 @@ export interface Reminder {
   body: string;
 }
 
-export function remindersFor(db: DB, user: UserRow, now = Date.now()): Reminder[] {
+export async function remindersFor(db: DB, user: UserRow, now = Date.now()): Promise<Reminder[]> {
   const prefs = prefsOf(user);
   if (!prefs.remindersEnabled) return [];
-  const d = dashboard(db, user, now);
+  const d = await dashboard(db, user, now);
   const out: Reminder[] = [];
   const local = DateTime.fromMillis(now, { zone: user.timezone });
 
@@ -49,38 +49,43 @@ export function remindersFor(db: DB, user: UserRow, now = Date.now()): Reminder[
   return quiet && !d.openShift ? [] : out;
 }
 
-export function startReminderJob(db: DB, log: (msg: string, err?: unknown) => void) {
-  if (!config.vapid) return () => {};
-  webpush.setVapidDetails(config.vapid.subject, config.vapid.publicKey, config.vapid.privateKey);
-
-  const tick = async () => {
-    const users = db.prepare("SELECT DISTINCT u.* FROM users u JOIN push_subscriptions p ON p.user_id = u.id").all() as UserRow[];
-    for (const user of users) {
-      let reminders: Reminder[];
-      try {
-        reminders = remindersFor(db, user);
-      } catch (e) {
-        log("reminders: compute failed", e);
-        continue;
-      }
-      // Au plus un rappel par passage, pour rester discret.
-      const next = reminders.find((r) => !db.prepare("SELECT 1 FROM notification_log WHERE user_id = ? AND key = ?").get(user.id, r.key));
-      if (!next) continue;
-      db.prepare("INSERT OR IGNORE INTO notification_log (user_id, key, sent_at) VALUES (?, ?, ?)").run(user.id, next.key, Date.now());
-      const subs = db.prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?").all(user.id) as any[];
-      for (const s of subs) {
-        try {
-          await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify({ title: next.title, body: next.body, url: "/" }), {
-            TTL: 3600,
-          });
-        } catch (e: any) {
-          if (e?.statusCode === 404 || e?.statusCode === 410) db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(s.id);
-          else log("reminders: push failed", e);
-        }
+export async function runReminders(db: DB, env: Env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
+  const vapid = { subject: env.VAPID_SUBJECT ?? "mailto:admin@boi.lu", publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY };
+  const users = await db.all<UserRow>("SELECT DISTINCT u.* FROM users u JOIN push_subscriptions p ON p.user_id = u.id");
+  for (const user of users) {
+    let reminders: Reminder[];
+    try {
+      reminders = await remindersFor(db, user);
+    } catch (e) {
+      console.error("reminders: compute failed", e);
+      continue;
+    }
+    // Au plus un rappel par passage, pour rester discret.
+    let next: Reminder | undefined;
+    for (const rem of reminders) {
+      if (!(await db.first("SELECT 1 FROM notification_log WHERE user_id = ? AND key = ?", user.id, rem.key))) {
+        next = rem;
+        break;
       }
     }
-    db.prepare("DELETE FROM notification_log WHERE sent_at < ?").run(Date.now() - 60 * 86_400_000);
-  };
-  const timer = setInterval(() => void tick().catch((e) => log("reminders: tick failed", e)), 5 * 60_000);
-  return () => clearInterval(timer);
+    if (!next) continue;
+    await db.run("INSERT OR IGNORE INTO notification_log (user_id, key, sent_at) VALUES (?, ?, ?)", user.id, next.key, Date.now());
+    const subs = await db.all<{ id: string; endpoint: string; p256dh: string; auth: string }>("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?", user.id);
+    for (const s of subs) {
+      try {
+        const payload = await buildPushPayload(
+          { data: JSON.stringify({ title: next.title, body: next.body, url: "/" }), options: { ttl: 3600 } },
+          { endpoint: s.endpoint, expirationTime: null, keys: { p256dh: s.p256dh, auth: s.auth } },
+          vapid,
+        );
+        const res = await fetch(s.endpoint, payload);
+        if (res.status === 404 || res.status === 410) await db.run("DELETE FROM push_subscriptions WHERE id = ?", s.id);
+        else if (!res.ok) console.error("reminders: push failed", res.status, await res.text());
+      } catch (e) {
+        console.error("reminders: push failed", e);
+      }
+    }
+  }
+  await db.run("DELETE FROM notification_log WHERE sent_at < ?", Date.now() - 60 * 86_400_000);
 }

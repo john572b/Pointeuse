@@ -10,47 +10,51 @@ années, un calendrier, un historique exportable, Face ID / biométrie et des ra
 L'analyse, l'architecture, le modèle de données, les règles de calcul et les règles de sécurité sont
 décrits dans **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-## Démarrage rapide (développement)
+## Hébergement : Cloudflare Workers
+
+Tout tourne sur Cloudflare : le Worker sert l'API (`/api/*`) et l'interface (Workers Assets), les
+données sont dans une base **D1** (`pointeuse`), un cron envoie les rappels push.
+
+```
+shared/      moteur de paie, jours fériés, schémas — partagé client / serveur, testé
+server/      Worker (Hono) : auth, WebAuthn, API, rappels push, accès D1
+web/         React + Vite + Tailwind : pages, composants, PWA (manifest + service worker)
+migrations/  schéma D1 (wrangler d1 migrations)
+scripts/     données de démonstration
+docs/        architecture
+```
+
+## Développement local
 
 ```bash
 npm install
-npm run seed:demo      # optionnel : compte demo@pointeuse.local / demo-pointeuse avec 14 mois d'historique
-npm run dev            # API sur :3000, interface sur http://localhost:5173
+cp .env.example .dev.vars              # renseigner PASSWORD_PEPPER
+npm run db:migrate:local               # crée le schéma dans la D1 locale
+npm run seed:demo && npx wrangler d1 execute pointeuse --local --file data/seed-demo.sql   # optionnel
+npm run dev                            # Worker sur :8787, interface (rechargement à chaud) sur http://localhost:5173
 ```
 
 | Commande | Rôle |
 | --- | --- |
-| `npm run dev` | API (tsx watch) + interface (Vite) |
+| `npm run dev` | Worker local (`wrangler dev`) + interface (Vite) |
 | `npm test` | Tests du moteur de paie et de l'API (isolation des comptes, CSRF, validation…) |
 | `npm run typecheck` | Vérification TypeScript |
-| `npm run build` | Build de production dans `dist/` |
-| `npm start` | Lance le serveur de production (API + interface) |
+| `npm run build` | Build de l'interface dans `dist/web` |
+| `npm run deploy` | Build + `wrangler deploy` |
 
-## Déploiement sur pointeuse.boi.lu
+## Mise en production
 
-Le DNS de `pointeuse.boi.lu` doit pointer vers le serveur.
+Prérequis : la zone `boi.lu` dans le compte Cloudflare (le domaine `pointeuse.boi.lu` est créé
+automatiquement par `wrangler deploy` grâce à `routes … custom_domain = true`).
 
 ```bash
-cp .env.example .env   # renseigner SMTP et clés VAPID (npx web-push generate-vapid-keys)
-docker compose up -d --build
+npx wrangler login                       # ou CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+npm run db:migrate                       # applique migrations/ à la base D1 distante
+npx wrangler secret put PASSWORD_PEPPER  # openssl rand -base64 48
+npx wrangler secret put RESEND_API_KEY   # facultatif : e-mails de réinitialisation
+npx wrangler secret put VAPID_PUBLIC_KEY # facultatif : notifications push
+npx wrangler secret put VAPID_PRIVATE_KEY
+npm run deploy
 ```
 
-`docker compose` lance l'application et **Caddy**, qui obtient et renouvelle automatiquement le
-certificat HTTPS. Les données sont dans le volume `pointeuse-data` (un fichier SQLite :
-sauvegarder `/data/pointeuse.db`, par exemple avec `sqlite3 pointeuse.db ".backup backup.db"`).
-
-Sans Docker : `npm ci && npm run build && NODE_ENV=production APP_URL=https://pointeuse.boi.lu npm start`
-derrière un reverse proxy HTTPS (obligatoire : cookies `Secure` et WebAuthn exigent HTTPS).
-
-> Après chaque nouveau build, redémarrer le serveur (il garde `index.html` en mémoire).
-
-## Structure
-
-```
-shared/   moteur de paie, jours fériés, schémas — partagé client / serveur, testé
-server/   Fastify : auth, WebAuthn, API, rappels push, SQLite + migrations
-web/      React + Vite + Tailwind : pages, composants, PWA (manifest + service worker)
-scripts/  données de démonstration
-deploy/   configuration Caddy
-docs/     architecture
-```
+Sauvegarde : `npx wrangler d1 export pointeuse --remote --output sauvegarde.sql`.

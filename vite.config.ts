@@ -9,6 +9,6 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(__dirname, "web/src"), "@shared": path.resolve(__dirname, "shared") },
   },
-  server: { port: 5173, proxy: { "/api": "http://localhost:3000" } },
+  server: { port: 5173, proxy: { "/api": "http://localhost:8787" } },
   build: { outDir: "../dist/web", emptyOutDir: true, chunkSizeWarningLimit: 1200 },
 });

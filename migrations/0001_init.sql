@@ -1,11 +1,4 @@
-/**
- * Migrations SQL, appliquées dans l'ordre et une seule fois.
- * Ne jamais modifier une migration publiée : en ajouter une nouvelle.
- * Instants : millisecondes epoch UTC. Dates calendaires : texte ISO YYYY-MM-DD (fuseau de l'utilisateur).
- */
-export const migrations: string[] = [
-  /* 1 — schéma initial */ `
-  CREATE TABLE users (
+CREATE TABLE users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
@@ -129,5 +122,3 @@ export const migrations: string[] = [
     sent_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, key)
   );
-  `,
-];

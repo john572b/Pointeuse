@@ -38,11 +38,11 @@ biométrie) est rangée dans **Profil** et dans les pages secondaires.
 └───────────────────────────────▲───────────────────────────────────────────────────────┘
                                 │ HTTPS · JSON · cookie de session httpOnly
 ┌───────────────────────────────┴───────────────────────────────────────────────────────┐
-│  Node 20+ · Fastify 5 (un seul processus : API /api/* + fichiers statiques du SPA)      │
+│  Cloudflare Worker (Hono) : API /api/* · Workers Assets sert l'interface (SPA)          │
 │   ├─ auth/        inscription, connexion, sessions, reset, WebAuthn (Face ID)          │
 │   ├─ routes/      shifts, absences, holidays, settings, stats, export, push            │
-│   ├─ jobs/        rappels intelligents (toutes les 5 min, anti-spam)                   │
-│   └─ db/          SQLite (better-sqlite3, WAL) + migrations SQL versionnées            │
+│   ├─ jobs/        rappels intelligents (cron toutes les 5 min, anti-spam)              │
+│   └─ db.ts        Cloudflare D1 (SQLite) + migrations SQL versionnées (migrations/)    │
 └────────────────────────────────────────────────────────────────────────────────────────┘
                                 │
                          shared/ (TypeScript pur, testé)
@@ -53,10 +53,11 @@ biométrie) est rangée dans **Profil** et dans les pages secondaires.
 
 **Pourquoi ces choix**
 
-* **Un seul déploiement** (un process Node + un fichier SQLite) : facile à héberger
-  derrière Caddy/Nginx sur `pointeuse.boi.lu`, sauvegarde = copier un fichier.
-* **SQLite** suffit très largement pour un usage individuel ; la couche `server/db/repos`
-  isole le SQL pour pouvoir passer à PostgreSQL plus tard (abonnements, multi-instances).
+* **Cloudflare Workers + D1** : pas de serveur à administrer, HTTPS et domaine gérés par
+  Cloudflare, déploiement en une commande (`npm run deploy`), sauvegarde par `wrangler d1 export`.
+* **D1 (SQLite)** suffit très largement pour un usage individuel ; l'interface `DB`
+  (`server/db.ts`) isole l'accès aux données — les tests tournent sur better-sqlite3 avec le
+  même SQL.
 * **Moteur de paie dans `shared/`** : même code côté serveur (stats, export) et côté
   client (aperçu instantané quand on modifie ses règles). Couvert par des tests unitaires.
 * **API JSON REST** : une future application mobile (React Native / Capacitor) pourra
@@ -212,21 +213,23 @@ graphiques `BarChartCard`, `DonutCard`, `LineChartCard`.
 
 ## 8. Sécurité
 
-* Mots de passe **argon2id** (paramètres OWASP), longueur minimale 8.
+* Mots de passe : **PBKDF2-HMAC-SHA-512**, 100 000 itérations (maximum autorisé par Workers),
+  sel aléatoire + **poivre secret** (`PASSWORD_PEPPER`) : une fuite de la base ne suffit pas
+  à attaquer les hachages. Longueur minimale 8.
 * Session : jeton aléatoire 256 bits en cookie `httpOnly; Secure; SameSite=Lax`,
   stocké **haché** en base, expiration glissante 30 jours, révocation à la déconnexion
   et au changement de mot de passe (toutes les autres sessions).
-* **CSRF** : SameSite=Lax + vérification de l'en-tête `Origin` sur toute requête
-  mutante + en-tête `X-Requested-With` obligatoire.
+* **CSRF** : SameSite=Lax + vérification de l'en-tête `Origin` (doit être l'origine de
+  l'app) sur toute requête mutante + en-tête `X-Requested-With` obligatoire.
 * **Séparation stricte des comptes** : chaque requête SQL est filtrée par `user_id`
   issu de la session — jamais d'un paramètre client. Une ressource d'un autre
   utilisateur renvoie 404 (pas de fuite d'existence).
 * Validation **zod** de toutes les entrées côté serveur.
-* Rate limiting sur l'authentification ; message identique que l'e-mail existe ou non
+* Rate limiting (binding Workers, 10 tentatives/min/IP) sur l'authentification ; message identique que l'e-mail existe ou non
   (inscription exceptée) ; reset par jeton à usage unique valable 1 h.
 * WebAuthn (Face ID / Touch ID / Windows Hello) via `@simplewebauthn`, vérification
   utilisateur requise, compteur anti-clonage, RP ID = `pointeuse.boi.lu`.
-* En-têtes : Helmet (CSP stricte, HSTS, frame-ancestors none, no-sniff).
+* HTTPS et HSTS gérés par Cloudflare ; `no-store` sur l'API, `nosniff`.
 * Export et suppression du compte (RGPD).
 
 ---
@@ -236,8 +239,8 @@ graphiques `BarChartCard`, `DonutCard`, `LineChartCard`.
 | Évolution | Point d'ancrage |
 | --- | --- |
 | Géolocalisation | colonnes `*_lat/lng/accuracy` déjà présentes ; `prefs.geo` ; l'API de pointage accepte déjà `location` optionnel |
-| Abonnements | table `subscriptions` + middleware `requirePlan` ; passage à PostgreSQL via `db/repos` |
-| Notifications | Web Push déjà en place, règles dans `server/jobs/reminders.ts` |
+| Abonnements | table `subscriptions` + middleware `requirePlan` |
+| Notifications | Web Push déjà en place (cron Workers), règles dans `server/jobs/reminders.ts` |
 | Nouvelles règles de paie | `rules.schemaVersion` + migration de schéma JSON ; moteur modulaire |
 | Export avancé | `server/routes/export.ts` (CSV, PDF imprimable) |
 | App mobile | API REST JSON ; authentification par cookie ou jeton Bearer |
