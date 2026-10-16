@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronRight, Clock3, Wallet } from "lucide-react";
+import { AlertTriangle, ChevronRight, Clock3, Pencil, Wallet } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
@@ -9,12 +9,15 @@ import { Card, EmptyState, SectionTitle, Sheet, Spinner, cx } from "@/components
 import { ClockActions, StatusPill, StatusSentence, isIntervention, useLive } from "@/components/Clock";
 import { PayBreakdown } from "@/components/PayBreakdown";
 import { ProgressRing } from "@/components/ProgressRing";
+import { StartTimeSheet } from "@/components/StartTimeSheet";
+import type { Shift } from "@/lib/types";
 
 export function Dashboard() {
   const user = useUser();
   const { data: d, isLoading, error } = useDashboard();
   const live = useLive(d);
   const [payOpen, setPayOpen] = useState(false);
+  const [editStart, setEditStart] = useState(false);
 
   if (isLoading) return <Spinner />;
   if (error || !d || !live) return <EmptyState icon={<AlertTriangle />} title="Impossible de charger vos données" text={(error as Error)?.message} />;
@@ -48,7 +51,7 @@ export function Dashboard() {
           <p className="mt-2 text-[15px] text-ink-3">travaillées aujourd'hui</p>
         </div>
         <div className="mb-6 grid grid-cols-3 divide-x divide-line rounded-2xl bg-surface-2 py-3 text-center">
-          <Mini label="Début" value={d.todayStart ? hhmm(d.todayStart, zone) : "—"} />
+          <Mini label="Début" value={d.todayStart ? hhmm(d.todayStart, zone) : "—"} onClick={d.openShift ? () => setEditStart(true) : undefined} />
           <Mini label="Pause" value={formatDuration(live.todayBreak)} />
           <Mini label="Heures sup." value={formatDuration(live.overtime)} highlight={live.overtime > 0} />
         </div>
@@ -154,6 +157,8 @@ export function Dashboard() {
         )}
       </Card>
 
+      <StartTimeSheet shift={editStart ? ((d.openShift as Shift | null) ?? null) : null} onClose={() => setEditStart(false)} />
+
       <Sheet open={payOpen} onClose={() => setPayOpen(false)} title={`Salaire estimé · ${DateTime.now().setLocale("fr").toFormat("LLLL")}`}>
         <PayBreakdown lines={d.month.lines} totalCents={d.month.amountCents} currency={user.currency} />
         <Link to="/profil/remuneration" className="mt-5 block text-center text-sm font-medium text-accent">
@@ -164,12 +169,22 @@ export function Dashboard() {
   );
 }
 
-function Mini({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div>
+function Mini({ label, value, highlight, onClick }: { label: string; value: string; highlight?: boolean; onClick?: () => void }) {
+  const inner = (
+    <>
       <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">{label}</p>
-      <p className={cx("tabular mt-0.5 text-[15px] font-semibold", highlight && "text-[var(--series-2)]")}>{value}</p>
-    </div>
+      <p className={cx("tabular mt-0.5 flex items-center justify-center gap-1 text-[15px] font-semibold", highlight && "text-[var(--series-2)]", onClick && "text-accent")}>
+        {value}
+        {onClick && <Pencil className="size-3" />}
+      </p>
+    </>
+  );
+  return onClick ? (
+    <button onClick={onClick} className="rounded-xl outline-none transition active:scale-95 focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Modifier l'heure d'arrivée">
+      {inner}
+    </button>
+  ) : (
+    <div>{inner}</div>
   );
 }
 

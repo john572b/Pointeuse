@@ -70,6 +70,22 @@ describe("API", () => {
     expect(r.json.recent).toHaveLength(1);
   });
 
+  it("lets the user move the start of a running day earlier (forgot to clock in)", async () => {
+    const h = await register("oubli@example.com");
+    const started = (await call("POST", "/api/clock/start", { headers: h })).json;
+    const shift = started.openShift;
+    const earlier = shift.startAt - 90 * 60_000;
+    const put = await call("PUT", `/api/shifts/${shift.id}`, { headers: h, body: { startAt: earlier, endAt: null, breaks: [], note: shift.note, bonusIds: shift.bonusIds, kind: shift.kind } });
+    expect(put.status).toBe(200);
+    const d = (await call("GET", "/api/dashboard", { headers: h })).json;
+    expect(d.status).toBe("working");
+    expect(d.openShift.startAt).toBe(earlier);
+    expect(d.todaySummary.workedMs).toBeGreaterThanOrEqual(89 * 60_000);
+    // Une arrivée dans le futur est refusée.
+    const future = await call("PUT", `/api/shifts/${shift.id}`, { headers: h, body: { startAt: Date.now() + 3600_000, endAt: null, breaks: [] } });
+    expect(future.status).toBe(400);
+  });
+
   it("clocks an emergency intervention as overtime only", async () => {
     const h = await register("urgence@example.com");
     let r = await call("POST", "/api/clock/start", { headers: h, body: { kind: "intervention" } });

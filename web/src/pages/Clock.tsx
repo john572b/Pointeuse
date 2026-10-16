@@ -11,6 +11,7 @@ import { ClockActions, StatusPill, StatusSentence, isIntervention, useLive } fro
 import { ProgressRing } from "@/components/ProgressRing";
 import { DayTimeline } from "@/components/DayTimeline";
 import { DaySheet } from "@/components/DaySheet";
+import { StartTimeSheet } from "@/components/StartTimeSheet";
 
 /** Écran de pointage plein écran : un chrono, un bouton. */
 export function ClockPage() {
@@ -18,6 +19,7 @@ export function ClockPage() {
   const { data: d, isLoading } = useDashboard();
   const live = useLive(d);
   const [edit, setEdit] = useState(false);
+  const [startOf, setStartOf] = useState<Shift | null>(null);
   const days = useQuery({
     queryKey: ["days", d?.today, d?.today, d?.status],
     queryFn: () => api.get<DaysResponse>(`/days?from=${d!.today}&to=${d!.today}`),
@@ -29,7 +31,7 @@ export function ClockPage() {
   const goal = d.todaySummary.dailyHours * 3_600_000;
   const shifts: Shift[] = days.data?.days[0]?.shifts ?? (d.openShift ? [d.openShift as Shift] : []);
   const events = shifts.flatMap((s) => [
-    { t: s.startAt, label: "Début de journée", icon: LogIn },
+    { t: s.startAt, label: "Début de journée", icon: LogIn, startOf: s },
     ...s.breaks.flatMap((b) => [{ t: b.startAt, label: "Début de pause", icon: Coffee }, ...(b.endAt ? [{ t: b.endAt, label: "Reprise", icon: LogIn }] : [])]),
     ...(s.endAt ? [{ t: s.endAt, label: "Fin de journée", icon: LogOut }] : []),
   ]);
@@ -39,6 +41,11 @@ export function ClockPage() {
       <StatusPill status={d.status} intervention={isIntervention(d)} size="lg" />
       <p className="mt-3 text-[15px] text-ink-3">
         <StatusSentence d={d} live={live} zone={zone} />
+        {d.openShift && (
+          <button onClick={() => setStartOf(d.openShift as Shift)} className="ml-2 inline-flex items-center gap-1 font-medium text-accent">
+            <Pencil className="size-3" /> Modifier
+          </button>
+        )}
       </p>
 
       <div className="my-8">
@@ -71,18 +78,42 @@ export function ClockPage() {
           )}
         </div>
         {shifts.length === 0 ? (
-          <EmptyState icon={<LogIn />} title="Aucun pointage aujourd'hui" text="Votre journée apparaîtra ici dès que vous l'aurez commencée." />
+          <EmptyState
+            icon={<LogIn />}
+            title="Aucun pointage aujourd'hui"
+            text="Votre journée apparaîtra ici dès que vous l'aurez commencée."
+            action={
+              <button onClick={() => setEdit(true)} className="text-sm font-medium text-accent">
+                Oublié de pointer ? Ajouter mes horaires
+              </button>
+            }
+          />
         ) : (
           <>
             <DayTimeline shifts={shifts} zone={zone} now={live.now} />
             <ul className="mt-5 space-y-3">
               {events.map((e, i) => (
-                <li key={i} className="flex items-center gap-3">
-                  <span className="grid size-8 place-items-center rounded-xl bg-surface-2 text-ink-2">
-                    <e.icon className="size-4" />
-                  </span>
-                  <span className="flex-1 text-[15px]">{e.label}</span>
-                  <span className="tabular font-semibold">{hhmm(e.t, zone)}</span>
+                <li key={i}>
+                  {"startOf" in e && e.startOf ? (
+                    <button onClick={() => setStartOf(e.startOf)} className="flex w-full items-center gap-3 text-left" aria-label="Modifier l'heure d'arrivée">
+                      <span className="grid size-8 place-items-center rounded-xl bg-surface-2 text-ink-2">
+                        <e.icon className="size-4" />
+                      </span>
+                      <span className="flex-1 text-[15px]">{e.label}</span>
+                      <span className="tabular flex items-center gap-1.5 font-semibold text-accent">
+                        {hhmm(e.t, zone)}
+                        <Pencil className="size-3.5" />
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <span className="grid size-8 place-items-center rounded-xl bg-surface-2 text-ink-2">
+                        <e.icon className="size-4" />
+                      </span>
+                      <span className="flex-1 text-[15px]">{e.label}</span>
+                      <span className="tabular font-semibold">{hhmm(e.t, zone)}</span>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -93,6 +124,7 @@ export function ClockPage() {
           </>
         )}
       </Card>
+      <StartTimeSheet shift={startOf} onClose={() => setStartOf(null)} />
       <DaySheet date={edit ? d.today : null} onClose={() => setEdit(false)} />
     </div>
   );
